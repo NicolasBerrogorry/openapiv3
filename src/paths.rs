@@ -112,7 +112,7 @@ pub struct Paths {
     #[serde(flatten, deserialize_with = "deserialize_paths")]
     pub paths: IndexMap<String, ReferenceOr<PathItem>>,
     /// Inline extensions to this object.
-    #[serde(flatten, deserialize_with = "crate::util::deserialize_extensions")]
+    #[serde(flatten, deserialize_with = "crate::util::deserialize_x_extensions")]
     pub extensions: IndexMap<String, serde_json::Value>,
 }
 

@@ -30,15 +30,29 @@ where
     where
         D: serde::Deserializer<'de>,
     {
+        // Tried in order. A bare `{"$ref": …}` is a Reference Object. A `$ref`
+        // beside other keywords is, in JSON Schema 2020-12 (OpenAPI 3.1), a
+        // schema in which `$ref` is one keyword among the others, so the item
+        // is tried next and keeps every sibling. An object that cannot carry
+        // `$ref` as a keyword (a Parameter, a Response) falls back to the 3.0
+        // reading: a reference, siblings dropped. The untagged enum buffers the
+        // input in serde's order-preserving form, so object order survives.
         #[derive(Deserialize)]
-        #[serde(untagged)]
+        #[serde(untagged, deny_unknown_fields)]
         enum RefOrInner<TT> {
             Reference {
                 #[serde(rename = "$ref")]
                 reference: String,
             },
             Item(TT),
+            Loose(LooseReference),
             Fail(serde_json::Value),
+        }
+
+        #[derive(Deserialize)]
+        struct LooseReference {
+            #[serde(rename = "$ref")]
+            reference: String,
         }
 
         let inner = RefOrInner::<T>::deserialize(deserializer)?;
@@ -46,6 +60,9 @@ where
         match inner {
             RefOrInner::Reference { reference } => Ok(ReferenceOr::Reference { reference }),
             RefOrInner::Item(item) => Ok(ReferenceOr::Item(item)),
+            RefOrInner::Loose(LooseReference { reference }) => {
+                Ok(ReferenceOr::Reference { reference })
+            }
 
             // We know this will fail. It's inefficient in that we try (and
             // fail) T::deserialize twice, but it allows us to produce a better
@@ -181,20 +198,31 @@ mod tests {
 
     #[test]
     fn test_ref_and() {
-        // Note: missing the "description" field
+        // A $ref with siblings is a schema carrying $ref as a keyword (JSON
+        // Schema 2020-12, OpenAPI 3.1); the siblings are kept, not ignored.
         let value = json!({
-            "description": "this is ignored",
+            "description": "this is kept",
             "$ref": "#/foo/bar"
         });
 
         let ref_or_schema = serde_json::from_value::<ReferenceOr<Schema>>(value);
 
         match ref_or_schema {
-            // Expected case
-            Ok(ReferenceOr::Reference { .. }) => (),
-
-            Ok(ReferenceOr::Item(_)) => panic!("parsed as item"),
+            Ok(ReferenceOr::Item(schema)) => {
+                assert_eq!(schema.schema_data.description.as_deref(), Some("this is kept"));
+                assert_eq!(schema.schema_data.extensions["$ref"], json!("#/foo/bar"));
+            }
+            Ok(ReferenceOr::Reference { .. }) => panic!("parsed as a bare reference"),
             Err(e) => panic!("failed to parse: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_bare_ref() {
+        let value = json!({ "$ref": "#/foo/bar" });
+        match serde_json::from_value::<ReferenceOr<Schema>>(value) {
+            Ok(ReferenceOr::Reference { reference }) => assert_eq!(reference, "#/foo/bar"),
+            other => panic!("expected a reference, got {other:?}"),
         }
     }
 }

@@ -342,7 +342,10 @@ fn test_ref_or_err() {
         .find(|(_, fname, _)| *fname == "fitbit.json")
         .expect("unfit");
 
-    let unfitbit = fitbit.replace("minimum", "exclusiveMinimum");
+    // A numeric exclusiveMinimum is valid OpenAPI 3.1 and reads without error now,
+    // so the corruption is one that is wrong in every version: a format string
+    // where a schema's numeric `maxLength` belongs.
+    let unfitbit = fitbit.replace("\"format\"", "\"maxLength\"");
 
     match serde_json::from_str::<OpenAPI>(&unfitbit) {
         Ok(_) => unreachable!("should not succeed"),

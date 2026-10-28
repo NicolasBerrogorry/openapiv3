@@ -28,7 +28,7 @@ pub struct SchemaData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
     /// Inline extensions to this object.
-    #[serde(flatten, deserialize_with = "crate::util::deserialize_extensions")]
+    #[serde(flatten, deserialize_with = "crate::util::deserialize_schema_extensions")]
     pub extensions: IndexMap<String, serde_json::Value>,
 }
 
@@ -73,18 +73,52 @@ impl<'de> Deserialize<'de> for SchemaKind {
     where
         D: serde::Deserializer<'de>,
     {
+        // The OpenAPI 3.1 forms of three keywords cannot be held by this model: a
+        // `type` array, a numeric exclusive bound, a boolean `items`. They are read
+        // here as absent — never as something else — and retained verbatim in
+        // SchemaData.extensions (see util::deserialize_schema_extensions), so the
+        // schema serializes back exactly as it was read.
+        fn type_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+            match serde_json::Value::deserialize(d)? {
+                serde_json::Value::String(s) => Ok(Some(s)),
+                serde_json::Value::Array(_) | serde_json::Value::Null => Ok(None),
+                other => Err(serde::de::Error::custom(format!(
+                    "`type` must be a string (or, in OpenAPI 3.1, an array), got {other}"
+                ))),
+            }
+        }
+        fn exclusive_flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+            match serde_json::Value::deserialize(d)? {
+                serde_json::Value::Bool(b) => Ok(Some(b)),
+                serde_json::Value::Number(_) | serde_json::Value::Null => Ok(None),
+                other => Err(serde::de::Error::custom(format!(
+                    "an exclusive bound must be a boolean (or, in OpenAPI 3.1, a number), got {other}"
+                ))),
+            }
+        }
+        fn items_schema<'de, D: serde::Deserializer<'de>>(
+            d: D,
+        ) -> Result<Option<ReferenceOr<Box<Schema>>>, D::Error> {
+            match serde_json::Value::deserialize(d)? {
+                serde_json::Value::Bool(_) | serde_json::Value::Null => Ok(None),
+                value => serde_json::from_value(value)
+                    .map(Some)
+                    .map_err(serde::de::Error::custom),
+            }
+        }
+
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct RawAnySchema {
-            #[serde(rename = "type", default)]
+            #[serde(rename = "type", default, deserialize_with = "type_name")]
             typ: Option<String>,
             #[serde(default)]
             pattern: Option<String>,
             #[serde(default)]
             multiple_of: Option<serde_json::Number>,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "exclusive_flag")]
             exclusive_minimum: Option<bool>,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "exclusive_flag")]
             exclusive_maximum: Option<bool>,
             #[serde(default)]
             minimum: Option<serde_json::Number>,
@@ -100,7 +134,7 @@ impl<'de> Deserialize<'de> for SchemaKind {
             min_properties: Option<usize>,
             #[serde(default)]
             max_properties: Option<usize>,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "items_schema")]
             items: Option<ReferenceOr<Box<Schema>>>,
             #[serde(default)]
             min_items: Option<usize>,

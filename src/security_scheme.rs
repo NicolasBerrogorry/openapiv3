@@ -72,6 +72,19 @@ pub enum SecurityScheme {
         #[serde(flatten, deserialize_with = "crate::util::deserialize_extensions")]
         extensions: IndexMap<String, serde_json::Value>,
     },
+    /// Mutual TLS, added in OpenAPI 3.1: the client authenticates with a
+    /// certificate. The scheme carries no settings of its own.
+    #[serde(rename = "mutualTLS")]
+    MutualTLS {
+        /// A short description for security scheme. CommonMark syntax MAY be
+        /// used for rich text representation.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+
+        /// Inline extensions to this object.
+        #[serde(flatten, deserialize_with = "crate::util::deserialize_extensions")]
+        extensions: IndexMap<String, serde_json::Value>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

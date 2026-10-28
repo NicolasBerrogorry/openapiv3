@@ -30,7 +30,7 @@ pub struct Responses {
     #[serde(flatten, deserialize_with = "deserialize_responses")]
     pub responses: IndexMap<StatusCode, ReferenceOr<Response>>,
     /// Inline extensions to this object.
-    #[serde(flatten, deserialize_with = "crate::util::deserialize_extensions")]
+    #[serde(flatten, deserialize_with = "crate::util::deserialize_x_extensions")]
     pub extensions: IndexMap<String, serde_json::Value>,
 }
 
