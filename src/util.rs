@@ -82,33 +82,41 @@ const SCHEMA_KEYWORDS: &[&str] = &[
     "allOf",
     "anyOf",
     "not",
+    // JSON Schema 2020-12 (OpenAPI 3.1)
+    "$ref",
+    "$id",
+    "$anchor",
+    "$comment",
+    "const",
+    "examples",
+    "$defs",
+    "if",
+    "then",
+    "else",
+    "patternProperties",
+    "dependentSchemas",
+    "dependentRequired",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "contentMediaType",
+    "contentEncoding",
+    "prefixItems",
+    "contains",
+    "minContains",
+    "maxContains",
 ];
 
-/// The OpenAPI 3.1 forms of modeled keywords that the 3.0 model cannot hold:
-/// a `type` array, a numeric exclusive bound, a boolean `items`. The typed side
-/// reads them as absent (see `schema.rs`); the map keeps them, so they
-/// serialize back exactly and nothing is lost.
-fn is_31_form(key: &str, value: &serde_json::Value) -> bool {
-    match key {
-        "type" => value.is_array(),
-        "exclusiveMinimum" | "exclusiveMaximum" => value.is_number(),
-        "items" => value.is_boolean(),
-        _ => false,
-    }
-}
-
-/// Schema Objects: retain what the typed model does not consume, plus the 3.1
-/// forms it cannot hold.
+/// Schema Objects: retain what the typed model does not consume.
 pub(crate) fn deserialize_schema_extensions<'de, D>(
     deserializer: D,
 ) -> Result<IndexMap<String, serde_json::Value>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    fn retain(key: &String, value: &serde_json::Value) -> bool {
-        !SCHEMA_KEYWORDS.contains(&key.as_str()) || is_31_form(key, value)
-    }
-    deserializer.deserialize_map(ValuePredicateVisitor(retain))
+    deserializer.deserialize_map(PredicateVisitor(
+        |key: &String| !SCHEMA_KEYWORDS.contains(&key.as_str()),
+        PhantomData,
+    ))
 }
 
 /// Used to deserialize IndexMap<K, V> that are flattened within other structs.
@@ -142,43 +150,6 @@ where
                 }
                 Ok(Some(_)) => {
                     let _ = map.next_value::<IgnoredAny>()?;
-                }
-            }
-        }
-
-        Ok(ret)
-    }
-}
-
-/// Like [PredicateVisitor], but the predicate also sees the value: needed where
-/// the same key is kept or left to the typed fields depending on its shape.
-pub(crate) struct ValuePredicateVisitor<F>(pub F);
-
-impl<'de, F> Visitor<'de> for ValuePredicateVisitor<F>
-where
-    F: Fn(&String, &serde_json::Value) -> bool,
-{
-    type Value = IndexMap<String, serde_json::Value>;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("a map whose entries obey a predicate")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: serde::de::MapAccess<'de>,
-    {
-        let mut ret = Self::Value::default();
-
-        loop {
-            match map.next_key::<String>() {
-                Err(_) => (),
-                Ok(None) => break,
-                Ok(Some(key)) => {
-                    let value: serde_json::Value = map.next_value()?;
-                    if self.0(&key, &value) {
-                        let _ = ret.insert(key, value);
-                    }
                 }
             }
         }

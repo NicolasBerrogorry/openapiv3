@@ -36,6 +36,9 @@ pub struct Components {
     /// An object to hold reusable Callback Objects.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub callbacks: IndexMap<String, ReferenceOr<Callback>>,
+    /// An object to hold reusable Path Item Objects (3.1).
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub path_items: IndexMap<String, ReferenceOr<PathItem>>,
     /// Inline extensions to this object.
     #[serde(flatten, deserialize_with = "crate::util::deserialize_extensions")]
     pub extensions: IndexMap<String, serde_json::Value>,

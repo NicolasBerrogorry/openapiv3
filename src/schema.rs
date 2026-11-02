@@ -27,12 +27,174 @@ pub struct SchemaData {
     pub discriminator: Option<Discriminator>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
+    /// A `$ref` carried beside other keywords: in JSON Schema 2020-12 (OpenAPI
+    /// 3.1) one keyword among the others, the siblings kept. A bare `$ref` is a
+    /// [ReferenceOr::Reference], never a schema.
+    #[serde(rename = "$ref", default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    #[serde(rename = "$id", default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "$anchor", default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
+    #[serde(rename = "$comment", default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    /// The `const` keyword: the one value the instance may be.
+    #[serde(rename = "const", default, skip_serializing_if = "Option::is_none")]
+    pub const_value: Option<serde_json::Value>,
+    /// The `examples` keyword (3.1); the singular `example` is above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<serde_json::Value>,
+    /// The `$defs` keyword: schemas the schema defines for its own `$ref`s.
+    #[serde(rename = "$defs", default, skip_serializing_if = "IndexMap::is_empty")]
+    pub defs: IndexMap<String, ReferenceOr<Schema>>,
+    #[serde(rename = "if", default, skip_serializing_if = "Option::is_none")]
+    pub if_schema: Option<Box<ReferenceOr<Schema>>>,
+    #[serde(rename = "then", default, skip_serializing_if = "Option::is_none")]
+    pub then_schema: Option<Box<ReferenceOr<Schema>>>,
+    #[serde(rename = "else", default, skip_serializing_if = "Option::is_none")]
+    pub else_schema: Option<Box<ReferenceOr<Schema>>>,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub pattern_properties: IndexMap<String, ReferenceOr<Schema>>,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub dependent_schemas: IndexMap<String, ReferenceOr<Schema>>,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub dependent_required: IndexMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unevaluated_properties: Option<BoolOrSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unevaluated_items: Option<BoolOrSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_encoding: Option<String>,
     /// Inline extensions to this object.
     #[serde(
         flatten,
         deserialize_with = "crate::util::deserialize_schema_extensions"
     )]
     pub extensions: IndexMap<String, serde_json::Value>,
+}
+
+/// A JSON Schema type name. OpenAPI 3.1 (JSON Schema 2020-12) adds `null`; a
+/// name outside the set is kept as it was written.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SchemaType {
+    Boolean,
+    Integer,
+    Number,
+    String,
+    Array,
+    Object,
+    Null,
+    Other(String),
+}
+
+impl SchemaType {
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "boolean" => Self::Boolean,
+            "integer" => Self::Integer,
+            "number" => Self::Number,
+            "string" => Self::String,
+            "array" => Self::Array,
+            "object" => Self::Object,
+            "null" => Self::Null,
+            other => Self::Other(other.to_string()),
+        }
+    }
+
+    /// The name as the `type` keyword writes it.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Boolean => "boolean",
+            Self::Integer => "integer",
+            Self::Number => "number",
+            Self::String => "string",
+            Self::Array => "array",
+            Self::Object => "object",
+            Self::Null => "null",
+            Self::Other(name) => name,
+        }
+    }
+}
+
+impl Serialize for SchemaType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for SchemaType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(|name| Self::from_name(&name))
+    }
+}
+
+/// The `type` keyword in either form: one name, as 3.0 requires, or the set of
+/// names 3.1 allows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum TypeSet {
+    Single(SchemaType),
+    Multiple(Vec<SchemaType>),
+}
+
+impl TypeSet {
+    /// Whether the keyword is exactly this one name.
+    pub fn is(&self, schema_type: SchemaType) -> bool {
+        matches!(self, Self::Single(t) if *t == schema_type)
+    }
+
+    /// Whether the keyword names this type.
+    pub fn contains(&self, schema_type: &SchemaType) -> bool {
+        match self {
+            Self::Single(t) => t == schema_type,
+            Self::Multiple(types) => types.contains(schema_type),
+        }
+    }
+
+    /// Every type the keyword names, in document order.
+    pub fn iter(&self) -> impl Iterator<Item = &SchemaType> {
+        match self {
+            Self::Single(t) => std::slice::from_ref(t).iter(),
+            Self::Multiple(types) => types.iter(),
+        }
+    }
+
+    /// The one type the keyword names besides `null`, if there is exactly one:
+    /// `"string"` and `["string", "null"]` both read as `String`.
+    pub fn single(&self) -> Option<&SchemaType> {
+        let mut non_null = self.iter().filter(|t| **t != SchemaType::Null);
+        match (non_null.next(), non_null.next()) {
+            (Some(t), None) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+/// An exclusive bound in either form: in 3.0 a flag that makes `minimum` or
+/// `maximum` exclusive, in 3.1 the bound itself, kept as written.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ExclusiveBound {
+    Flag(bool),
+    Value(serde_json::Number),
+}
+
+impl ExclusiveBound {
+    /// Whether the bound excludes its value: a set flag, or a value.
+    pub fn is_exclusive(&self) -> bool {
+        !matches!(self, Self::Flag(false))
+    }
+}
+
+/// A schema, or (JSON Schema 2020-12) a boolean schema: `true` admits
+/// everything, `false` nothing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum BoolOrSchema {
+    Schema(Box<ReferenceOr<Schema>>),
+    Bool(bool),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -76,55 +238,19 @@ impl<'de> Deserialize<'de> for SchemaKind {
     where
         D: serde::Deserializer<'de>,
     {
-        // The OpenAPI 3.1 forms of three keywords cannot be held by this model: a
-        // `type` array, a numeric exclusive bound, a boolean `items`. They are read
-        // here as absent — never as something else — and retained verbatim in
-        // SchemaData.extensions (see util::deserialize_schema_extensions), so the
-        // schema serializes back exactly as it was read.
-        fn type_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-            match serde_json::Value::deserialize(d)? {
-                serde_json::Value::String(s) => Ok(Some(s)),
-                serde_json::Value::Array(_) | serde_json::Value::Null => Ok(None),
-                other => Err(serde::de::Error::custom(format!(
-                    "`type` must be a string (or, in OpenAPI 3.1, an array), got {other}"
-                ))),
-            }
-        }
-        fn exclusive_flag<'de, D: serde::Deserializer<'de>>(
-            d: D,
-        ) -> Result<Option<bool>, D::Error> {
-            match serde_json::Value::deserialize(d)? {
-                serde_json::Value::Bool(b) => Ok(Some(b)),
-                serde_json::Value::Number(_) | serde_json::Value::Null => Ok(None),
-                other => Err(serde::de::Error::custom(format!(
-                    "an exclusive bound must be a boolean (or, in OpenAPI 3.1, a number), got {other}"
-                ))),
-            }
-        }
-        fn items_schema<'de, D: serde::Deserializer<'de>>(
-            d: D,
-        ) -> Result<Option<ReferenceOr<Box<Schema>>>, D::Error> {
-            match serde_json::Value::deserialize(d)? {
-                serde_json::Value::Bool(_) | serde_json::Value::Null => Ok(None),
-                value => serde_json::from_value(value)
-                    .map(Some)
-                    .map_err(serde::de::Error::custom),
-            }
-        }
-
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct RawAnySchema {
-            #[serde(rename = "type", default, deserialize_with = "type_name")]
-            typ: Option<String>,
+            #[serde(rename = "type", default)]
+            typ: Option<TypeSet>,
             #[serde(default)]
             pattern: Option<String>,
             #[serde(default)]
             multiple_of: Option<serde_json::Number>,
-            #[serde(default, deserialize_with = "exclusive_flag")]
-            exclusive_minimum: Option<bool>,
-            #[serde(default, deserialize_with = "exclusive_flag")]
-            exclusive_maximum: Option<bool>,
+            #[serde(default)]
+            exclusive_minimum: Option<ExclusiveBound>,
+            #[serde(default)]
+            exclusive_maximum: Option<ExclusiveBound>,
             #[serde(default)]
             minimum: Option<serde_json::Number>,
             #[serde(default)]
@@ -139,8 +265,16 @@ impl<'de> Deserialize<'de> for SchemaKind {
             min_properties: Option<usize>,
             #[serde(default)]
             max_properties: Option<usize>,
-            #[serde(default, deserialize_with = "items_schema")]
-            items: Option<ReferenceOr<Box<Schema>>>,
+            #[serde(default)]
+            items: Option<BoolOrSchema>,
+            #[serde(default)]
+            prefix_items: Option<Vec<ReferenceOr<Schema>>>,
+            #[serde(default)]
+            contains: Option<Box<ReferenceOr<Schema>>>,
+            #[serde(default)]
+            min_contains: Option<usize>,
+            #[serde(default)]
+            max_contains: Option<usize>,
             #[serde(default)]
             min_items: Option<usize>,
             #[serde(default)]
@@ -182,6 +316,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties: None,
                 max_properties: None,
                 items: None,
+                prefix_items: None,
+                contains: None,
+                min_contains: None,
+                max_contains: None,
                 min_items: None,
                 max_items: None,
                 unique_items: None,
@@ -193,7 +331,7 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 all_of: None,
                 any_of: None,
                 not: None,
-            } if typ == "string"
+            } if typ.is(SchemaType::String)
                 && enumerated_values_valid(&enumeration, serde_json::Value::is_string) =>
             {
                 Ok(Self::Type(Type::String(StringType {
@@ -222,6 +360,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties: None,
                 max_properties: None,
                 items: None,
+                prefix_items: None,
+                contains: None,
+                min_contains: None,
+                max_contains: None,
                 min_items: None,
                 max_items: None,
                 unique_items: None,
@@ -233,14 +375,14 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 all_of: None,
                 any_of: None,
                 not: None,
-            } if typ == "number"
+            } if typ.is(SchemaType::Number)
                 && enumerated_values_valid(&enumeration, serde_json::Value::is_number) =>
             {
                 Ok(Self::Type(Type::Number(NumberType {
                     format: format.into(),
                     multiple_of: multiple_of.map(|v| v.as_f64().unwrap()),
-                    exclusive_minimum: exclusive_minimum.unwrap_or_default(),
-                    exclusive_maximum: exclusive_maximum.unwrap_or_default(),
+                    exclusive_minimum,
+                    exclusive_maximum,
                     minimum: minimum.map(|v| v.as_f64().unwrap()),
                     maximum: maximum.map(|v| v.as_f64().unwrap()),
                     enumeration: enumerated_values_transform(
@@ -265,6 +407,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties: None,
                 max_properties: None,
                 items: None,
+                prefix_items: None,
+                contains: None,
+                min_contains: None,
+                max_contains: None,
                 min_items: None,
                 max_items: None,
                 unique_items: None,
@@ -276,17 +422,19 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 all_of: None,
                 any_of: None,
                 not: None,
-            } if typ == "integer"
+            } if typ.is(SchemaType::Integer)
                 && enumerated_values_valid(&enumeration, serde_json::Value::is_i64)
                 && none_or_int(&multiple_of)
                 && none_or_int(&minimum)
-                && none_or_int(&maximum) =>
+                && none_or_int(&maximum)
+                && none_or_int_bound(&exclusive_minimum)
+                && none_or_int_bound(&exclusive_maximum) =>
             {
                 Ok(Self::Type(Type::Integer(IntegerType {
                     format: format.into(),
                     multiple_of: multiple_of.map(|v| v.as_i64().unwrap()),
-                    exclusive_minimum: exclusive_minimum.unwrap_or_default(),
-                    exclusive_maximum: exclusive_maximum.unwrap_or_default(),
+                    exclusive_minimum,
+                    exclusive_maximum,
                     minimum: minimum.map(|v| v.as_i64().unwrap()),
                     maximum: maximum.map(|v| v.as_i64().unwrap()),
                     enumeration: enumerated_values_transform(
@@ -311,6 +459,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties: None,
                 max_properties: None,
                 items: None,
+                prefix_items: None,
+                contains: None,
+                min_contains: None,
+                max_contains: None,
                 min_items: None,
                 max_items: None,
                 unique_items: None,
@@ -322,7 +474,7 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 all_of: None,
                 any_of: None,
                 not: None,
-            } if typ == "boolean"
+            } if typ.is(SchemaType::Boolean)
                 && enumerated_values_valid(&enumeration, serde_json::Value::is_boolean) =>
             {
                 Ok(Self::Type(Type::Boolean(BooleanType {
@@ -348,6 +500,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties,
                 max_properties,
                 items: None,
+                prefix_items: None,
+                contains: None,
+                min_contains: None,
+                max_contains: None,
                 min_items: None,
                 max_items: None,
                 unique_items: None,
@@ -359,7 +515,7 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 all_of: None,
                 any_of: None,
                 not: None,
-            } if typ == "object" => Ok(Self::Type(Type::Object(ObjectType {
+            } if typ.is(SchemaType::Object) => Ok(Self::Type(Type::Object(ObjectType {
                 properties: properties.unwrap_or_default(),
                 required: required.unwrap_or_default(),
                 additional_properties,
@@ -382,6 +538,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties: None,
                 max_properties: None,
                 items,
+                prefix_items,
+                contains,
+                min_contains,
+                max_contains,
                 min_items,
                 max_items,
                 unique_items,
@@ -393,8 +553,12 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 all_of: None,
                 any_of: None,
                 not: None,
-            } if typ == "array" => Ok(Self::Type(Type::Array(ArrayType {
+            } if typ.is(SchemaType::Array) => Ok(Self::Type(Type::Array(ArrayType {
                 items,
+                prefix_items: prefix_items.unwrap_or_default(),
+                contains,
+                min_contains,
+                max_contains,
                 min_items,
                 max_items,
                 unique_items: unique_items.unwrap_or_default(),
@@ -415,6 +579,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties: None,
                 max_properties: None,
                 items: None,
+                prefix_items: None,
+                contains: None,
+                min_contains: None,
+                max_contains: None,
                 min_items: None,
                 max_items: None,
                 unique_items: None,
@@ -443,6 +611,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties: None,
                 max_properties: None,
                 items: None,
+                prefix_items: None,
+                contains: None,
+                min_contains: None,
+                max_contains: None,
                 min_items: None,
                 max_items: None,
                 unique_items: None,
@@ -471,6 +643,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties: None,
                 max_properties: None,
                 items: None,
+                prefix_items: None,
+                contains: None,
+                min_contains: None,
+                max_contains: None,
                 min_items: None,
                 max_items: None,
                 unique_items: None,
@@ -499,6 +675,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties: None,
                 max_properties: None,
                 items: None,
+                prefix_items: None,
+                contains: None,
+                min_contains: None,
+                max_contains: None,
                 min_items: None,
                 max_items: None,
                 unique_items: None,
@@ -527,6 +707,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties,
                 max_properties,
                 items,
+                prefix_items,
+                contains,
+                min_contains,
+                max_contains,
                 min_items,
                 max_items,
                 unique_items,
@@ -552,6 +736,10 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 min_properties,
                 max_properties,
                 items,
+                prefix_items: prefix_items.unwrap_or_default(),
+                contains,
+                min_contains,
+                max_contains,
                 min_items,
                 max_items,
                 unique_items,
@@ -565,6 +753,13 @@ impl<'de> Deserialize<'de> for SchemaKind {
                 not,
             })),
         }
+    }
+}
+
+fn none_or_int_bound(value: &Option<ExclusiveBound>) -> bool {
+    match value {
+        Some(ExclusiveBound::Value(x)) => x.is_i64(),
+        _ => true,
     }
 }
 
@@ -631,15 +826,15 @@ pub enum AdditionalProperties {
 #[serde(rename_all = "camelCase")]
 pub struct AnySchema {
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
-    pub typ: Option<String>,
+    pub typ: Option<TypeSet>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiple_of: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exclusive_minimum: Option<bool>,
+    pub exclusive_minimum: Option<ExclusiveBound>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exclusive_maximum: Option<bool>,
+    pub exclusive_maximum: Option<ExclusiveBound>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimum: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -655,7 +850,15 @@ pub struct AnySchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_properties: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub items: Option<ReferenceOr<Box<Schema>>>,
+    pub items: Option<BoolOrSchema>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefix_items: Vec<ReferenceOr<Schema>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contains: Option<Box<ReferenceOr<Schema>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_contains: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_contains: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_items: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -702,10 +905,10 @@ pub struct NumberType {
     pub format: VariantOrUnknownOrEmpty<NumberFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multiple_of: Option<f64>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub exclusive_minimum: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub exclusive_maximum: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclusive_minimum: Option<ExclusiveBound>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclusive_maximum: Option<ExclusiveBound>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimum: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -721,10 +924,10 @@ pub struct IntegerType {
     pub format: VariantOrUnknownOrEmpty<IntegerFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multiple_of: Option<i64>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub exclusive_minimum: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub exclusive_maximum: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclusive_minimum: Option<ExclusiveBound>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclusive_maximum: Option<ExclusiveBound>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimum: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -752,7 +955,16 @@ pub struct ObjectType {
 #[serde(rename_all = "camelCase")]
 pub struct ArrayType {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub items: Option<ReferenceOr<Box<Schema>>>,
+    pub items: Option<BoolOrSchema>,
+    /// The schemas of the leading items (3.1); `items` then covers the rest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefix_items: Vec<ReferenceOr<Schema>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contains: Option<Box<ReferenceOr<Schema>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_contains: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_contains: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_items: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -924,7 +1136,10 @@ mod tests {
                 one_of,
                 ..
             }) => {
-                assert_eq!(typ.unwrap(), "object");
+                assert_eq!(
+                    typ.unwrap(),
+                    crate::TypeSet::Single(crate::SchemaType::Object)
+                );
                 assert_eq!(properties.len(), 3);
                 assert_eq!(one_of.len(), 3);
             }

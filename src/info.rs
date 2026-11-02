@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 pub struct Info {
     /// REQUIRED. The title of the application.
     pub title: String,
+    /// A short summary of the API (3.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// A short description of the application.
     /// CommonMark syntax MAY be used for rich text representation.
     #[serde(skip_serializing_if = "Option::is_none")]

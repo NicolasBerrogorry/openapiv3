@@ -213,7 +213,7 @@ mod tests {
                     schema.schema_data.description.as_deref(),
                     Some("this is kept")
                 );
-                assert_eq!(schema.schema_data.extensions["$ref"], json!("#/foo/bar"));
+                assert_eq!(schema.schema_data.reference.as_deref(), Some("#/foo/bar"));
             }
             Ok(ReferenceOr::Reference { .. }) => panic!("parsed as a bare reference"),
             Err(e) => panic!("failed to parse: {e}"),

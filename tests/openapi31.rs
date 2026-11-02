@@ -1,10 +1,10 @@
-//! OpenAPI 3.1 documents read through the 3.0 model without loss.
+//! OpenAPI 3.1 documents read without loss.
 //!
-//! The model types what 3.0 can say. Everything 3.1 adds, and the 3.1 forms of
-//! keywords the model cannot hold, are retained verbatim in each object's
-//! `extensions` and serialized back, so a document round-trips. These tests pin
-//! that contract: the typed view stays honest (absent, never wrong), and the
-//! JSON that comes out is the JSON that went in.
+//! What 3.1 adds is typed like what 3.0 has: a `type` set, a numeric exclusive
+//! bound, a boolean `items`, the JSON Schema 2020-12 keywords, `webhooks`.
+//! What the model does not type is retained verbatim in each object's
+//! `extensions`. Either way the JSON that comes out is the JSON that went in;
+//! these tests pin that.
 
 use openapiv3::*;
 use serde_json::{json, Value};
@@ -88,8 +88,7 @@ fn petstore_3_1_parses_and_round_trips() {
     let doc: OpenAPI = serde_json::from_str(raw).expect("the 3.1 petstore parses");
     assert_eq!(doc.openapi, "3.1.0");
     assert_eq!(doc.paths.paths.len(), 2);
-    // 3.1 vocabulary at the top level survives beside the typed fields.
-    assert!(doc.extensions.contains_key("webhooks"));
+    assert!(!doc.webhooks.is_empty());
 
     let original: Value = serde_json::from_str(raw).unwrap();
     let back = serde_json::to_value(&doc).unwrap();
@@ -97,54 +96,119 @@ fn petstore_3_1_parses_and_round_trips() {
 }
 
 #[test]
-fn type_array_is_retained_and_the_typed_view_reads_no_single_type() {
+fn a_type_set_is_typed() {
     let input = json!({ "type": ["string", "null"], "maxLength": 5, "description": "maybe" });
     let parsed = schema(input.clone());
     match &parsed.schema_kind {
         SchemaKind::Any(any) => {
-            assert_eq!(any.typ, None);
+            let types = any.typ.as_ref().unwrap();
+            assert_eq!(
+                *types,
+                TypeSet::Multiple(vec![SchemaType::String, SchemaType::Null])
+            );
+            assert!(types.contains(&SchemaType::Null));
+            assert_eq!(types.single(), Some(&SchemaType::String));
             assert_eq!(any.max_length, Some(5));
         }
         other => panic!("expected the untyped kind, got {other:?}"),
     }
-    assert_eq!(
-        parsed.schema_data.extensions["type"],
-        json!(["string", "null"])
-    );
+    assert!(!parsed.schema_data.extensions.contains_key("type"));
     round_trips(input);
+    // A single 3.1 `null`, and a name outside the set, both read as written.
+    match &schema(json!({ "type": "null" })).schema_kind {
+        SchemaKind::Any(any) => assert_eq!(any.typ, Some(TypeSet::Single(SchemaType::Null))),
+        other => panic!("expected the untyped kind, got {other:?}"),
+    }
+    match &schema(json!({ "type": "file" })).schema_kind {
+        SchemaKind::Any(any) => assert_eq!(
+            any.typ,
+            Some(TypeSet::Single(SchemaType::Other("file".into())))
+        ),
+        other => panic!("expected the untyped kind, got {other:?}"),
+    }
+    round_trips(json!({ "type": "file" }));
 }
 
 #[test]
-fn numeric_exclusive_bounds_are_retained_and_read_as_no_bound() {
+fn a_numeric_exclusive_bound_is_typed() {
     let input = json!({ "type": "number", "exclusiveMinimum": 5, "maximum": 10 });
     let parsed = schema(input.clone());
     match &parsed.schema_kind {
         SchemaKind::Type(Type::Number(number)) => {
-            assert!(!number.exclusive_minimum);
+            assert_eq!(
+                number.exclusive_minimum,
+                Some(ExclusiveBound::Value(5.into()))
+            );
+            assert!(number.exclusive_minimum.as_ref().unwrap().is_exclusive());
+            assert_eq!(number.exclusive_maximum, None);
             assert_eq!(number.minimum, None);
             assert_eq!(number.maximum, Some(10.0));
         }
         other => panic!("expected a number, got {other:?}"),
     }
-    assert_eq!(parsed.schema_data.extensions["exclusiveMinimum"], json!(5));
+    assert!(!parsed
+        .schema_data
+        .extensions
+        .contains_key("exclusiveMinimum"));
     round_trips(input);
-    round_trips(json!({ "type": "integer", "exclusiveMaximum": 3 }));
+
+    let input = json!({ "type": "integer", "exclusiveMaximum": 3 });
+    match &schema(input.clone()).schema_kind {
+        SchemaKind::Type(Type::Integer(integer)) => {
+            assert_eq!(
+                integer.exclusive_maximum,
+                Some(ExclusiveBound::Value(3.into()))
+            )
+        }
+        other => panic!("expected an integer, got {other:?}"),
+    }
+    round_trips(input);
+    // An integer with a fractional exclusive bound is not an integer schema.
+    match &schema(json!({ "type": "integer", "exclusiveMaximum": 3.5 })).schema_kind {
+        SchemaKind::Any(any) => {
+            assert_eq!(
+                any.exclusive_maximum,
+                Some(ExclusiveBound::Value(
+                    serde_json::Number::from_f64(3.5).unwrap()
+                ))
+            )
+        }
+        other => panic!("expected the untyped kind, got {other:?}"),
+    }
 }
 
 #[test]
-fn boolean_items_is_retained() {
+fn a_boolean_items_and_prefix_items_are_typed() {
     let input = json!({ "type": "array", "items": false, "prefixItems": [{ "type": "string" }] });
     let parsed = schema(input.clone());
     match &parsed.schema_kind {
-        SchemaKind::Type(Type::Array(array)) => assert!(array.items.is_none()),
+        SchemaKind::Type(Type::Array(array)) => {
+            assert_eq!(array.items, Some(BoolOrSchema::Bool(false)));
+            assert_eq!(array.prefix_items.len(), 1);
+            assert!(matches!(
+                &array.prefix_items[0],
+                ReferenceOr::Item(item) if matches!(item.schema_kind, SchemaKind::Type(Type::String(_)))
+            ));
+        }
+        other => panic!("expected an array, got {other:?}"),
+    }
+    round_trips(input);
+
+    let input = json!({ "type": "array", "items": { "type": "integer" }, "contains": { "const": 1 }, "minContains": 1 });
+    match &schema(input.clone()).schema_kind {
+        SchemaKind::Type(Type::Array(array)) => {
+            assert!(matches!(array.items, Some(BoolOrSchema::Schema(_))));
+            assert!(array.contains.is_some());
+            assert_eq!(array.min_contains, Some(1));
+        }
         other => panic!("expected an array, got {other:?}"),
     }
     round_trips(input);
 }
 
 #[test]
-fn json_schema_2020_12_vocabulary_is_retained_verbatim() {
-    round_trips(json!({
+fn json_schema_2020_12_vocabulary_is_typed_and_round_trips() {
+    let input = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://example.com/thing",
         "type": "object",
@@ -157,7 +221,28 @@ fn json_schema_2020_12_vocabulary_is_retained_verbatim() {
         "then": { "required": ["b"] },
         "contentMediaType": "application/json",
         "dependentRequired": { "a": ["b"] }
-    }));
+    });
+    let parsed = schema(input.clone());
+    let data = &parsed.schema_data;
+    assert_eq!(data.id.as_deref(), Some("https://example.com/thing"));
+    assert_eq!(data.const_value, Some(json!({ "fixed": true })));
+    assert_eq!(data.examples, vec![json!({ "a": 1 })]);
+    assert!(
+        matches!(&data.defs["Inner"], ReferenceOr::Item(inner) if inner.schema_data.const_value == Some(json!("x")))
+    );
+    assert_eq!(data.pattern_properties.len(), 1);
+    assert_eq!(data.unevaluated_properties, Some(BoolOrSchema::Bool(false)));
+    assert!(data.if_schema.is_some());
+    assert!(data.then_schema.is_some());
+    assert!(data.else_schema.is_none());
+    assert_eq!(data.content_media_type.as_deref(), Some("application/json"));
+    assert_eq!(data.dependent_required["a"], vec!["b".to_string()]);
+    // `$schema` is not modeled and stays an extension.
+    assert_eq!(
+        data.extensions["$schema"],
+        json!("https://json-schema.org/draft/2020-12/schema")
+    );
+    round_trips(input);
 }
 
 #[test]
@@ -172,8 +257,8 @@ fn a_ref_with_siblings_is_a_schema_carrying_the_ref() {
     };
     assert!(item.schema_data.write_only);
     assert_eq!(
-        item.schema_data.extensions["$ref"],
-        json!("#/components/schemas/Pet")
+        item.schema_data.reference.as_deref(),
+        Some("#/components/schemas/Pet")
     );
     let back = serde_json::to_value(&parsed).unwrap();
     assert_eq!(canonical(&back), canonical(&input));
@@ -207,8 +292,12 @@ fn a_3_1_document_may_omit_paths_and_keeps_its_envelope() {
     let doc: OpenAPI =
         serde_json::from_value(input.clone()).expect("a paths-less 3.1 document parses");
     assert!(doc.paths.paths.is_empty());
-    assert_eq!(doc.info.extensions["summary"], json!("only webhooks"));
-    assert!(doc.extensions.contains_key("jsonSchemaDialect"));
+    assert_eq!(doc.info.summary.as_deref(), Some("only webhooks"));
+    assert_eq!(
+        doc.json_schema_dialect.as_deref(),
+        Some("https://json-schema.org/draft/2020-12/schema")
+    );
+    assert!(matches!(&doc.webhooks["newPet"], ReferenceOr::Item(item) if item.post.is_some()));
     let back = serde_json::to_value(&doc).unwrap();
     assert_eq!(canonical(&back), canonical(&input));
 }
@@ -226,7 +315,7 @@ fn the_3_0_dialect_is_untouched() {
     let parsed = schema(json!({ "type": "number", "minimum": 1, "exclusiveMinimum": true }));
     match &parsed.schema_kind {
         SchemaKind::Type(Type::Number(n)) => {
-            assert!(n.exclusive_minimum);
+            assert_eq!(n.exclusive_minimum, Some(ExclusiveBound::Flag(true)));
             assert_eq!(n.minimum, Some(1.0));
         }
         other => panic!("expected a number, got {other:?}"),

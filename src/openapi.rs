@@ -22,6 +22,16 @@ pub struct OpenAPI {
     /// REQUIRED. The available paths and operations for the API.
     #[serde(default)]
     pub paths: Paths,
+    /// The path items the API may call out to, keyed by a name (3.1).
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub webhooks: IndexMap<String, ReferenceOr<PathItem>>,
+    /// The default JSON Schema dialect of the document's Schema Objects (3.1).
+    #[serde(
+        rename = "jsonSchemaDialect",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub json_schema_dialect: Option<String>,
     /// An element to hold various schemas for the specification.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub components: Option<Components>,
