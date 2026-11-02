@@ -1,7 +1,9 @@
 # OpenAPI v3 ![example workflow](https://github.com/glademiller/openapiv3/actions/workflows/rust.yml/badge.svg)
 
 
-This crate provides data structures that represent the [OpenAPI v3.0.x specification](https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.3.md). Note this does not cover OpenAPI v3.1 which was an incompatible change.
+This crate provides data structures that represent the [OpenAPI v3.0.x specification](https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.3.md).
+
+[OpenAPI v3.1](https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.1.0.md) documents are read without loss: everything the 3.0 model types is available as usual, and everything 3.1 adds (`webhooks`, `jsonSchemaDialect`, `const`, `$defs`, `prefixItems`, `examples`, `mutualTLS`, a `$ref` with siblings, …) is retained verbatim in the `extensions` map of the object that carries it, and serialized back unchanged. The 3.1 forms of keywords the typed model cannot hold (a `type` array, a numeric `exclusiveMinimum`/`exclusiveMaximum`, a boolean `items`) are read as absent on the typed side and kept in `SchemaData::extensions`, so a document round-trips byte for byte. See `tests/openapi31.rs`.
 
 ## Example
 

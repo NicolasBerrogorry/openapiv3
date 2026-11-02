@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Read OpenAPI 3.1 documents without loss: 3.1-only vocabulary and the 3.1 forms of
+  modeled keywords are retained verbatim in `extensions` and serialized back unchanged
+- Add the `mutualTLS` security scheme and `extensions` to the `OpenIDConnect` scheme
+- `paths` is optional, as in 3.1 (a webhooks-only document)
+- A `$ref` with sibling keywords deserializes as the item carrying `$ref` (JSON Schema
+  2020-12 semantics) where the item type can hold it, instead of a bare reference
+  with the siblings dropped
+
 ## 2.2.0 (2025-06-02)
 
 - Fix regression in `ReferenceOr` parsing to preserve order and priority

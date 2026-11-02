@@ -20,6 +20,7 @@ pub struct OpenAPI {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers: Vec<Server>,
     /// REQUIRED. The available paths and operations for the API.
+    #[serde(default)]
     pub paths: Paths,
     /// An element to hold various schemas for the specification.
     #[serde(skip_serializing_if = "Option::is_none")]

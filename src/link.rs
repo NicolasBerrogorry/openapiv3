@@ -40,7 +40,7 @@ pub struct Link {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server: Option<Server>,
     /// Inline extensions to this object.
-    #[serde(flatten, deserialize_with = "crate::util::deserialize_extensions")]
+    #[serde(flatten, deserialize_with = "crate::util::deserialize_x_extensions")]
     pub extensions: IndexMap<String, serde_json::Value>,
 }
 
